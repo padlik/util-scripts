@@ -24,8 +24,8 @@ Convert any PDF — text-based or scanned/image-based — into structured JSON u
 ## Script Location
 
 ```
-pdf-extract.py          # PEP 723 inline-script-metadata for uv run
-.env                    # Optional: OPENAI_API_KEY, API_BASE, etc.
+scripts/pdf-extract.py          # PEP 723 inline-script-metadata for uv run
+scripts/.env                    # Optional: OPENAI_API_KEY, API_BASE, etc.
 ```
 
 ## Usage
@@ -34,13 +34,13 @@ pdf-extract.py          # PEP 723 inline-script-metadata for uv run
 
 ```bash
 # Text-based PDF → native extraction (no API calls)
-uv run pdf-extract.py report.pdf --format json -o report.json
+uv run scripts/pdf-extract.py report.pdf --format json -o report.json
 
 # Scanned/image PDF → vision API (requires API key)
-uv run pdf-extract.py scan.pdf --format json -o scan.json
+uv run scripts/pdf-extract.py scan.pdf --format json -o scan.json
 
 # With custom OpenAI-compatible endpoint
-uv run pdf-extract.py scan.pdf --format json \
+uv run scripts/pdf-extract.py scan.pdf --format json \
   --api-base http://localhost:11434/v1 \
   --api-key ollama \
   --model gemma3:4b \
@@ -50,7 +50,7 @@ uv run pdf-extract.py scan.pdf --format json \
 ### Full option list
 
 ```bash
-uv run pdf-extract.py input.pdf [options]
+uv run scripts/pdf-extract.py input.pdf [options]
 
 --pages       PAGE_RANGE    # e.g. "1-5", "3", "1,3,7" (default: all)
 --dpi         INT           # Render DPI — 120 is fast, 200 is sharp (default: 150)
@@ -72,7 +72,7 @@ uv run pdf-extract.py input.pdf [options]
 ### Extract a scanned contract to JSON with Groq
 
 ```bash
-uv run pdf-extract.py contract.pdf --format json \
+uv run scripts/pdf-extract.py contract.pdf --format json \
   --api-base https://api.groq.com/openai/v1 \
   --api-key "$GROQ_API_KEY" \
   --model meta-llama/llama-4-scout-17b-16e-instruct \
@@ -82,26 +82,26 @@ uv run pdf-extract.py contract.pdf --format json \
 ### Extract only pages 10–50, chunked for memory safety
 
 ```bash
-uv run pdf-extract.py big-report.pdf --pages 10-50 \
+uv run scripts/pdf-extract.py big-report.pdf --pages 10-50 \
   --chunk-size 20 --format json -o big-report.json
 ```
 
 ### Resume an interrupted extraction
 
 ```bash
-uv run pdf-extract.py thesis.pdf --format json --resume -o thesis.json
+uv run scripts/pdf-extract.py thesis.pdf --format json --resume -o thesis.json
 ```
 
 ### Force vision mode on a text PDF (e.g. for table extraction)
 
 ```bash
-uv run pdf-extract.py table-heavy.pdf --force-vision --format json -o tables.json
+uv run scripts/pdf-extract.py table-heavy.pdf --force-vision --format json -o tables.json
 ```
 
 ### Handle dense pages that may get truncated
 
 ```bash
-uv run pdf-extract.py dense-report.pdf --format json --max-tokens 16384 -o report.json
+uv run scripts/pdf-extract.py dense-report.pdf --format json --max-tokens 16384 -o report.json
 ```
 
 ## JSON Output Format
