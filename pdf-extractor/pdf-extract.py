@@ -31,18 +31,19 @@ Usage
 
 Options
 -------
-  --pages       PAGE RANGE   e.g. "1-5", "3", "1,3,7" (default: all)
-  --dpi         INT          Render DPI — 120 is fast, 200 is sharp (default: 150)
-  --quality     INT          JPEG quality 1–95; lower = smaller payload (default: 75)
-  --prompt      TEXT         Custom extraction prompt
-  --output      PATH         Output file (default: <input_stem>_extracted.txt|.jsonl)
-  --format      FORMAT       "text" or "json" (default: text)
-  --model       MODEL        Vision model (default: gpt-4o)
-  --api-base    URL          OpenAI-compatible API base URL (default: https://api.openai.com/v1)
-  --api-key     KEY          API key (default: $OPENAI_API_KEY)
-  --resume                  Skip pages whose output already exists in output file
-  --force-vision            Always use vision API (skip auto-detection)
-  --chunk-size  INT          Pages per chunk for large PDFs (default: 0 = no chunking)
+    --pages       PAGE RANGE   e.g. "1-5", "3", "1,3,7" (default: all)
+    --dpi         INT          Render DPI — 120 is fast, 200 is sharp (default: 150)
+    --quality     INT          JPEG quality 1–95; lower = smaller payload (default: 75)
+    --prompt      TEXT         Custom extraction prompt
+    --output      PATH         Output file (default: <input_stem>_extracted.txt|.jsonl)
+    --format      FORMAT       "text" or "json" (default: text)
+    --model       MODEL        Vision model (default: gpt-4o)
+    --api-base    URL          OpenAI-compatible API base URL (default: https://api.openai.com/v1)
+    --api-key     KEY          API key (default: $OPENAI_API_KEY)
+    --resume                  Skip pages whose output already exists in output file
+    --force-vision            Always use vision API (skip auto-detection)
+    --force-text              Always use native extraction (skip auto-detection)
+    --chunk-size  INT          Pages per chunk for large PDFs (default: 0 = no chunking)
 
 Requirements
 ------------
@@ -70,14 +71,14 @@ try:
 except ImportError:
     sys.exit("❌  PyMuPDF not found. Run: pip install PyMuPDF")
 
-try:
-    import openai
-except ImportError:
-    sys.exit("❌  openai not found. Run: pip install openai")
+# openai is imported lazily inside vision_query so the script can still
+# run native extraction / tests when the package is not installed.
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Load .env from the script's directory so it works regardless of CWD.
+    _script_dir = Path(__file__).resolve().parent
+    load_dotenv(_script_dir / ".env")
 except ImportError:
     pass
 
@@ -129,24 +130,62 @@ JSON_PROMPT = (
 # Page range parsing
 # ─────────────────────────────────────────────────────────────────────────────
 
+class PageRangeError(ValueError):
+    """Raised when a page range string cannot be parsed or is out of bounds."""
+
+
 def parse_page_range(spec: str, total_pages: int) -> list[int]:
     """
     Parse a page range spec into a sorted list of 0-based page indices.
     Spec examples: "1-5"  "3"  "1,3,7"  "2-4,8,10-12"
     Input is 1-based (user-facing); output is 0-based (fitz).
+    Raises PageRangeError for invalid syntax or empty/out-of-bounds ranges.
     """
+    if total_pages <= 0:
+        raise PageRangeError("PDF has no pages")
+
     pages: set[int] = set()
     for part in spec.split(","):
         part = part.strip()
+        if not part:
+            continue
+
         if "-" in part:
             start_s, end_s = part.split("-", 1)
-            start = max(1, int(start_s))
-            end = min(total_pages, int(end_s))
+            start_s = start_s.strip()
+            end_s = end_s.strip()
+            if not start_s or not end_s:
+                raise PageRangeError(f"Invalid page range segment: '{part}'")
+            try:
+                start = int(start_s)
+                end = int(end_s)
+            except ValueError as exc:
+                raise PageRangeError(f"Page numbers must be integers: '{part}'") from exc
+
+            if start < 1 or end < 1:
+                raise PageRangeError(f"Page numbers must be ≥ 1: '{part}'")
+            if start > end:
+                raise PageRangeError(f"Invalid inverted range: '{part}'")
+
+            start = max(1, start)
+            end = min(total_pages, end)
+            if start > total_pages:
+                raise PageRangeError(f"Range '{part}' is beyond the last page ({total_pages})")
             pages.update(range(start - 1, end))
         else:
-            idx = int(part) - 1
-            if 0 <= idx < total_pages:
-                pages.add(idx)
+            try:
+                page = int(part)
+            except ValueError as exc:
+                raise PageRangeError(f"Page number must be an integer: '{part}'") from exc
+            if page < 1:
+                raise PageRangeError(f"Page number must be ≥ 1: '{part}'")
+            if page > total_pages:
+                raise PageRangeError(f"Page {page} exceeds total pages ({total_pages})")
+            pages.add(page - 1)
+
+    if not pages:
+        raise PageRangeError(f"Page range '{spec}' matched no pages")
+
     return sorted(pages)
 
 
@@ -214,10 +253,11 @@ def extract_text_native(doc: fitz.Document, page_idx: int) -> dict:
     blocks = page.get_text("dict")["blocks"]
 
     headings: list[str] = []
-    body_lines: list[str] = []
+    body_blocks: list[list[str]] = []
+    seen_headings: set[str] = set()
 
     # Determine heading threshold from font sizes on this page
-    sizes = []
+    sizes: list[float] = []
     for block in blocks:
         if "lines" in block:
             for line in block["lines"]:
@@ -225,31 +265,58 @@ def extract_text_native(doc: fitz.Document, page_idx: int) -> dict:
                     sizes.append(span["size"])
 
     if sizes:
-        median_size = sorted(sizes)[len(sizes) // 2]
-        heading_threshold = median_size + 1.5  # 1.5pt above median
+        sorted_sizes = sorted(sizes)
+        # A heading must be meaningfully larger than the body text. Use the
+        # median plus a small margin; on a page where body text dominates,
+        # this lets the larger heading size stand out. If all text is the
+        # same size, we cannot distinguish headings by size alone.
+        median_size = sorted_sizes[len(sorted_sizes) // 2]
+        heading_threshold = median_size + 1.5
+        # Guard pathological case: if the largest text on the page is not
+        # above threshold but is at least 2 pt larger than the smallest,
+        # treat it as a heading anyway.
+        max_size = sorted_sizes[-1]
+        min_size = sorted_sizes[0]
+        if max_size < heading_threshold and (max_size - min_size) >= 2.0:
+            heading_threshold = max_size - 0.5
     else:
         heading_threshold = 12  # fallback
 
     for block in blocks:
         if "lines" not in block:
             continue
-        block_text = ""
+
+        block_body_lines: list[str] = []
+        block_heading_lines: list[str] = []
+
         for line in block["lines"]:
             line_text = "".join(span["text"] for span in line["spans"]).strip()
             if not line_text:
                 continue
             max_size = max((span["size"] for span in line["spans"]), default=0)
-            is_bold = any("Bold" in span["font"] or span["flags"] & 2**4 for span in line["spans"])
+            # Use PyMuPDF constant for bold flag (bit 4)
+            is_bold = any(
+                "Bold" in span["font"] or bool(span["flags"] & fitz.TEXT_FONT_BOLD)
+                for span in line["spans"]
+            )
 
             if max_size >= heading_threshold or is_bold:
-                # Likely heading
-                if line_text not in headings:
-                    headings.append(line_text)
+                block_heading_lines.append(line_text)
             else:
-                body_lines.append(line_text)
+                block_body_lines.append(line_text)
 
-        if body_lines and block_text:
-            body_lines.append("")
+        # Decide whether this block is a heading block or body block.
+        # A block is treated as a heading block if the majority of its
+        # non-empty lines are headings.
+        total_lines = len(block_heading_lines) + len(block_body_lines)
+        if total_lines and len(block_heading_lines) / total_lines >= 0.5:
+            for line_text in block_heading_lines:
+                if line_text not in seen_headings:
+                    headings.append(line_text)
+                    seen_headings.add(line_text)
+        else:
+            if block_body_lines:
+                body_blocks.append(block_body_lines)
 
     # Fallback: if no headings found, try a simple heuristic on raw text
     raw_text = page.get_text("text").strip()
@@ -259,11 +326,13 @@ def extract_text_native(doc: fitz.Document, page_idx: int) -> dict:
             if stripped and stripped.isupper() and len(stripped) < 100:
                 headings.append(stripped)
 
-    # Build page_text: if we used dict mode, rejoin body lines; otherwise raw
-    page_text = "\n".join(body_lines) if body_lines else raw_text
-
-    # Clean up repeated whitespace
+    # Build page_text by joining body blocks with blank separators.
+    page_text = "\n\n".join("\n".join(lines) for lines in body_blocks)
     page_text = re.sub(r'\n{3,}', '\n\n', page_text)
+
+    # If dict mode yielded nothing usable, fall back to raw text.
+    if not page_text:
+        page_text = raw_text
 
     # Language detection
     language = detect_language(page_text) if page_text else ""
@@ -298,10 +367,9 @@ def render_page_to_jpeg(doc: fitz.Document, page_idx: int,
 
     jpeg_bytes = pix.tobytes(output="jpeg", jpg_quality=quality)
 
-    # Explicit cleanup — critical on low-RAM systems
+    # Explicit cleanup — important on low-RAM systems
     pix = None
     page = None
-    gc.collect()
 
     return jpeg_bytes
 
@@ -320,7 +388,7 @@ def is_truncated(text: str) -> bool:
         return True
     return False
 
-def vision_query(client: openai.OpenAI,
+def vision_query(client,
                  jpeg_bytes: bytes,
                  prompt: str,
                  model: str,
@@ -329,17 +397,21 @@ def vision_query(client: openai.OpenAI,
     """
     Send one JPEG image to an OpenAI-compatible vision API and return
     the extracted text. Retries up to MAX_RETRIES times on transient errors.
-    Detects truncation and retries with higher max_tokens once.
+    Detects truncation and retries with higher max_tokens (up to 16384).
     """
+    import openai
+
     b64 = base64.standard_b64encode(jpeg_bytes).decode("utf-8")
     payload_kb = len(b64) / 1024
     print(f"    → payload: {payload_kb:.0f} KB", end="", flush=True)
 
+    current_max_tokens = max_tokens
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = client.chat.completions.create(
                 model=model,
-                max_tokens=max_tokens,
+                max_tokens=current_max_tokens,
+                timeout=120,
                 messages=[
                     {
                         "role": "user",
@@ -356,16 +428,16 @@ def vision_query(client: openai.OpenAI,
                     }
                 ],
             )
-            result = response.choices[0].message.content
+            result = response.choices[0].message.content or ""
 
-            # Truncation detection
+            # Truncation detection: retry once with doubled token budget.
             if is_truncated(result):
-                if max_tokens < 16384:
-                    print(f"  ⚠ truncation detected → retrying with {max_tokens * 2} tokens")
-                    return vision_query(
-                        client, jpeg_bytes, prompt, model, page_num,
-                        max_tokens=max_tokens * 2
-                    )
+                if current_max_tokens < 16384:
+                    doubled = min(current_max_tokens * 2, 16384)
+                    print(f"  ⚠ truncation detected → retrying with {doubled} tokens")
+                    current_max_tokens = doubled
+                    # Consume one attempt for the retry.
+                    continue
                 else:
                     print(f"  ⚠ truncation detected (max tokens reached)")
             else:
@@ -448,9 +520,14 @@ def format_page_output(page_num: int, content: str | dict, fmt: str, pdf_type: s
             }
         else:
             # Vision extraction returned raw text (may be JSON or plain text)
-            # Try to parse as JSON first, then fall back
+            # Strip optional markdown fences before parsing.
             try:
-                clean = content.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+                clean = re.sub(
+                    r"^```(?:json)?\s*|\s*```$",
+                    "",
+                    content.strip(),
+                    flags=re.IGNORECASE,
+                )
                 parsed = json.loads(clean)
                 parsed["_citation"] = f"[p.{page_num}]"
                 record = parsed
@@ -500,6 +577,7 @@ def extract_pdf(
     fmt: str,
     resume: bool,
     force_vision: bool,
+    force_text: bool,
     chunk_size: int,
     api_base: str,
     api_key: str,
@@ -507,14 +585,25 @@ def extract_pdf(
 ) -> None:
 
     print(f"\n📄 Opening: {pdf_path.name}")
-    doc = fitz.open(str(pdf_path))
+    try:
+        doc = fitz.open(str(pdf_path))
+    except fitz.FileDataError as e:
+        sys.exit(f"❌  Cannot open PDF {pdf_path.name}: {e}")
+    except Exception as e:
+        sys.exit(f"❌  Unexpected error opening {pdf_path.name}: {e}")
+
     total = len(doc)
     print(f"   {total} pages  |  DPI={dpi}  JPEG quality={quality}  model={model}")
 
     # ── Auto-detect PDF type ──────────────────────────────────────────────────
+    if force_vision and force_text:
+        sys.exit("❌  --force-vision and --force-text are mutually exclusive")
     if force_vision:
         pdf_type = "image"
         print("   🔍  PDF type: image (forced via --force-vision)")
+    elif force_text:
+        pdf_type = "text"
+        print("   🔍  PDF type: text (forced via --force-text)")
     else:
         pdf_type = detect_pdf_type(doc)
         label = "text-based (native extraction)" if pdf_type == "text" else "image-based (vision API)"
@@ -525,12 +614,17 @@ def extract_pdf(
     if pdf_type == "image":
         if not api_key:
             sys.exit("❌  No API key. Set OPENAI_API_KEY env var or use --api-key.")
+        import openai
         client = openai.OpenAI(base_url=api_base, api_key=api_key)
         print(f"   🔗  API base: {api_base}")
 
     # ── Resolve page list ─────────────────────────────────────────────────────
     if pages_spec:
-        page_indices = parse_page_range(pages_spec, total)
+        try:
+            page_indices = parse_page_range(pages_spec, total)
+        except PageRangeError as e:
+            doc.close()
+            sys.exit(f"❌  {e}")
     else:
         page_indices = list(range(total))
 
@@ -609,12 +703,10 @@ def extract_pdf(
 
                 # ── Free memory ────────────────────────────────────────────────
                 result = None
-                gc.collect()
 
-            # ── End-of-chunk flush and GC ──────────────────────────────────────
+            # ── End-of-chunk flush ─────────────────────────────────────────────
             if chunk_size > 0:
                 out.flush()
-                gc.collect()
                 print()
 
     doc.close()
@@ -656,6 +748,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Skip pages already present in output file")
     p.add_argument("--force-vision", action="store_true",
                    help="Always use vision API even for text-based PDFs")
+    p.add_argument("--force-text", action="store_true",
+                   help="Always use native extraction even for image-based PDFs")
     p.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
                    help=f"Max tokens per vision API call (default: {DEFAULT_MAX_TOKENS})")
     p.add_argument("--chunk-size", type=int, default=0,
@@ -704,6 +798,7 @@ def main() -> None:
         fmt=args.format,
         resume=args.resume,
         force_vision=args.force_vision,
+        force_text=args.force_text,
         chunk_size=args.chunk_size,
         api_base=api_base,
         api_key=api_key,

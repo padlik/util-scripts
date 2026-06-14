@@ -11,13 +11,13 @@ Convert any PDF — text-based or scanned/image-based — into structured JSON u
 
 | Feature | Description |
 |---|---|
-| **Auto-detect** | Automatically detects text-based vs image-based PDFs. Text PDFs use fast native PyMuPDF extraction; image/scanned PDFs use vision API |
+| **Auto-detect** | Automatically detects text-based vs image-based PDFs. Text PDFs use fast native PyMuPDF extraction; image/scanned PDFs use vision API. Override with `--force-vision` or `--force-text` |
 | **Native extraction** | For text PDFs: font-size heading detection, native table extraction (`find_tables`), and language auto-detection |
 | **OpenAI-compatible** | Works with OpenAI, Groq, Ollama, LM Studio, or any OpenAI-compatible endpoint |
 | **Truncation detection** | Detects when vision model output is truncated and auto-retries with doubled token limit |
 | **Chunking** | Process large PDFs (100+ pages) in configurable chunks to keep memory low |
 | **Citation markers** | Every page output includes `[p.N]` for verifiability |
-| **Resume** | `--resume` skips already-processed pages in interrupted runs |
+| **Resume** | `--resume` skips already-processed pages in interrupted runs. Page-range syntax errors are reported clearly. |
 | **Vision prompt** | Custom extraction prompts supported via `--prompt` |
 | **JSON output** | `--format json` returns structured JSON with `page_text`, `tables`, `headings`, `language` |
 
@@ -64,6 +64,7 @@ uv run scripts/pdf-extract.py input.pdf [options]
 --max-tokens  INT           # Max tokens per vision API call (default: 8192)
 --resume                    # Skip pages already present in output file
 --force-vision              # Always use vision API (skip auto-detection)
+--force-text                # Always use native extraction (skip auto-detection)
 --chunk-size  INT           # Pages per chunk for large PDFs (default: 0 = no chunking)
 ```
 
@@ -96,6 +97,12 @@ uv run scripts/pdf-extract.py thesis.pdf --format json --resume -o thesis.json
 
 ```bash
 uv run scripts/pdf-extract.py table-heavy.pdf --force-vision --format json -o tables.json
+```
+
+### Force native extraction on a PDF that auto-detects as image
+
+```bash
+uv run scripts/pdf-extract.py scan-with-ocr-layer.pdf --force-text --format json -o text.json
 ```
 
 ### Handle dense pages that may get truncated
@@ -137,9 +144,9 @@ OPENAI_API_BASE=http://localhost:11434/v1
 
 ## Notes
 
-- **Auto-detection**: The script samples the first 5 pages. If ≥60% have extractable text, it uses native extraction (fast, no API). Otherwise it uses the vision API.
-- **Native extraction quality**: For text PDFs, headings are detected via font-size heuristics, tables via PyMuPDF `find_tables()`, and language via `langdetect`. This is much more reliable than flat text extraction.
-- **Truncation detection**: In vision mode, if the model response appears truncated (ends with `...`, mid-word, or mid-sentence), the script automatically retries with double the token limit (up to 16,384 tokens).
+- **Auto-detection**: The script samples the first 5 pages. If ≥60% have extractable text, it uses native extraction (fast, no API). Otherwise it uses the vision API. Override with `--force-vision` or `--force-text`.
+- **Native extraction quality**: For text PDFs, headings are detected via font-size heuristics and bold flags, tables via PyMuPDF `find_tables()`, and language via `langdetect`. Repeated headings across a page are deduplicated.
+- **Truncation detection**: In vision mode, if the model response appears truncated, the script retries with double the token limit (up to 16,384 tokens). API calls use a 120-second timeout.
 - **Weak machine friendly**: Pages are rendered one at a time and freed immediately. JPEG bytes are sent directly to the API without temp files.
 - **Chunking**: For PDFs with 100+ pages, use `--chunk-size 20` to process in batches and keep memory pressure low.
 - **Resume**: `--resume` scans the output file for existing `--- Page N ---` markers and skips those pages.
