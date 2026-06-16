@@ -1,23 +1,23 @@
 ---
 name: voice-asr-gemini
 description: |
-  Transcribe audio files using the local `transcribe.py` script and the Google Gemini API.
+  Transcribe audio files using the local `voice_to_text.py` script and the Google Gemini API.
   Use this skill when the user asks to transcribe an audio or video file, create a transcript,
-  identify speakers, add timestamps, detect emotion, translate a transcript, or process a
-  YouTube video's audio. Triggers on phrases like "transcribe", "create transcript",
+  identify speakers, add timestamps, detect emotion, translate a transcript, summarize audio,
+  or process a YouTube video's audio. Triggers on phrases like "transcribe", "create transcript",
   "speaker diarization", "add timestamps", "translate audio", "emotion detection",
-  "transcribe this audio", "transcribe this YouTube video", etc.
+  "summarize audio", "transcribe this audio", "transcribe this YouTube video", etc.
 ---
 
 # Voice ASR Gemini
 
 ## Overview
 
-This skill wraps the local `@voice-asr-gemini/transcribe.py` script. It uses the Google Gemini
+This skill wraps the local `@voice-asr-gemini/voice_to_text.py` script. It uses the Google Gemini
 API to transcribe audio from local files or direct YouTube URLs.
 
 The script is a self-contained `uv` script with an inline dependency header, so it can be run
-with `uv run transcribe.py <input> [options]`.
+with `uv run voice_to_text.py <input> [options]`.
 
 ## Requirements
 
@@ -35,9 +35,10 @@ with `uv run transcribe.py <input> [options]`.
 | `--diarize` | Identify speakers as Speaker A, Speaker B, ... |
 | `--translate <lang>` | Auto-detect source language and translate to `<lang>` |
 | `--emotion` | Detect primary emotion per segment |
+| `--summary` | Include a summary of the whole audio (default: off) |
 | `--output <file>` | Save output to a file instead of stdout |
 | `--format {json,txt,srt}` | Output format (default: `json`) |
-| `--model <model>` | Override the Gemini model (default: `gemini-3.5-flash`) |
+| `--model <model>` | Override the Gemini model (default: `gemini-3.1-flash-lite`) |
 | `--youtube` | **Hidden option** — pass the input as a direct YouTube URL to Gemini instead of uploading a local file |
 
 ## Workflow
@@ -64,6 +65,7 @@ Select options based on the user's request:
 - Identify speakers → `--diarize`.
 - Translate to English/Spanish/etc. → `--translate en` / `--translate es`.
 - Detect emotion → `--emotion`.
+- Include a summary → `--summary`.
 - Save to file → `--output <path>`.
 - Subtitle file → `--format srt --timestamps --output <file>.srt`.
 
@@ -72,7 +74,7 @@ Select options based on the user's request:
 Execute from the `voice-asr-gemini` directory:
 
 ```bash
-uv run transcribe.py <input> [options]
+uv run voice_to_text.py <input> [options]
 ```
 
 For local files the script uploads via the Gemini Files API. For YouTube URLs it passes the
@@ -80,54 +82,61 @@ URL directly to Gemini as a `file_uri`.
 
 ### 5. Handle the output
 
-- Default output is JSON with a `summary` and `segments` array.
+- Default output is JSON with a `segments` array. When `--summary` is enabled, a `summary`
+  field is also included.
 - If `--output` is provided, the result is written to the file; otherwise it goes to stdout.
 - Return the transcript to the user, or summarize the contents if the user only wants a
-  high-level overview.
+  high-level overview (use `--summary` for that).
 
 ## Examples
 
 ### Transcribe a local audio file
 
 ```bash
-uv run transcribe.py recording.mp3
+uv run voice_to_text.py recording.mp3
 ```
 
 ### Transcribe with timestamps and speakers
 
 ```bash
-uv run transcribe.py meeting.wav --timestamps --diarize --output meeting.json
+uv run voice_to_text.py meeting.wav --timestamps --diarize --output meeting.json
 ```
 
 ### Translate a non-English audio file to English
 
 ```bash
-uv run transcribe.py interview.mp3 --translate en --output interview_en.json
+uv run voice_to_text.py interview.mp3 --translate en --output interview_en.json
 ```
 
 ### Detect emotion and add timestamps
 
 ```bash
-uv run transcribe.py podcast.mp3 --emotion --timestamps --diarize
+uv run voice_to_text.py podcast.mp3 --emotion --timestamps --diarize
+```
+
+### Summarize an audio file
+
+```bash
+uv run voice_to_text.py lecture.mp3 --summary --output lecture_summary.json
 ```
 
 ### Generate an SRT subtitle file
 
 ```bash
-uv run transcribe.py episode.mp3 --timestamps --format srt --output episode.srt
+uv run voice_to_text.py episode.mp3 --timestamps --format srt --output episode.srt
 ```
 
 ### Transcribe a YouTube video
 
 ```bash
-uv run transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID" --youtube --timestamps --diarize --output video.json
+uv run voice_to_text.py "https://www.youtube.com/watch?v=VIDEO_ID" --youtube --timestamps --diarize --output video.json
 ```
 
 ## Notes and limitations
 
 - This script uses the **free tier** of the Gemini API by default. Free tier limits vary by
   model and project; typical values are around 10 RPM / 250K TPM / ~1,500 RPD for
-  `gemini-3.5-flash`.
+  `gemini-3.1-flash-lite`.
 - Audio is tokenized at roughly **32 tokens per second**.
 - Free-tier inputs/outputs may be used by Google to improve models. Avoid sending sensitive or
   PII data through the free tier.

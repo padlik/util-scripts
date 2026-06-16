@@ -11,17 +11,18 @@ Transcribe audio files using the Google Gemini API.
 Supports:
 - Local audio file upload via the Gemini Files API
 - Direct YouTube URL input (hidden --youtube flag)
-- Optional timestamps, speaker diarization, translation, and emotion detection
+- Optional timestamps, speaker diarization, translation, emotion detection, and summary
 
 Usage:
-    uv run transcribe.py audio.mp3
-    uv run transcribe.py audio.mp3 --timestamps --diarize --emotion
-    uv run transcribe.py "https://www.youtube.com/watch?v=..." --youtube --timestamps --diarize
-    uv run transcribe.py audio.mp3 --translate es --output transcript.json
+    uv run voice_to_text.py audio.mp3
+    uv run voice_to_text.py audio.mp3 --timestamps --diarize --emotion
+    uv run voice_to_text.py "https://www.youtube.com/watch?v=..." --youtube --timestamps --diarize
+    uv run voice_to_text.py audio.mp3 --translate es --output transcript.json
+    uv run voice_to_text.py audio.mp3 --summary
 
 Free tier notes (Google AI Studio):
 - No credit card required; limits are per project.
-- gemini-3.5-flash free tier is typically around 10 RPM / 250K TPM / ~1,500 RPD.
+- Gemini 3.1 Flash Lite free tier is typically around 10 RPM / 250K TPM / ~1,500 RPD.
 - Audio tokenization: ~32 tokens per second of audio.
 - Maximum audio length per request: 9.5 hours.
 - Supported audio formats: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC.
@@ -47,7 +48,7 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 SUPPORTED_AUDIO_TYPES = {
@@ -96,10 +97,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  uv run transcribe.py audio.mp3
-  uv run transcribe.py audio.mp3 --timestamps --diarize
-  uv run transcribe.py audio.mp3 --translate es --emotion
-  uv run transcribe.py "https://www.youtube.com/watch?v=..." --youtube --timestamps --diarize
+  uv run voice_to_text.py audio.mp3
+  uv run voice_to_text.py audio.mp3 --timestamps --diarize
+  uv run voice_to_text.py audio.mp3 --translate es --emotion
+  uv run voice_to_text.py audio.mp3 --summary
+  uv run voice_to_text.py "https://www.youtube.com/watch?v=..." --youtube --timestamps --diarize
 
 Get an API key: https://aistudio.google.com/apikey
 Set GEMINI_API_KEY as an environment variable or in a .env file.
@@ -114,6 +116,7 @@ Set GEMINI_API_KEY as an environment variable or in a .env file.
         help="Auto-detect source language and translate transcript to the target language code (e.g. en, es, fr).",
     )
     parser.add_argument("--emotion", action="store_true", help="Detect the primary emotion per segment.")
+    parser.add_argument("--summary", action="store_true", help="Include a summary of the whole audio (default: off).")
     parser.add_argument("--output", "-o", help="Write output to this file instead of stdout.")
     parser.add_argument(
         "--format",
@@ -152,6 +155,7 @@ def build_prompt(
     diarize: bool,
     translate: str | None,
     emotion: bool,
+    summary: bool,
 ) -> str:
     parts = [
         "Process the provided audio and generate a detailed transcription.",
@@ -191,10 +195,16 @@ def build_prompt(
     else:
         parts.append("Do not include emotion information.")
 
-    parts.append(
-        "Provide a concise 'summary' field summarizing the whole audio. "
-        "The 'segments' array must contain the per-segment details described above."
-    )
+    if summary:
+        parts.append(
+            "Provide a concise 'summary' field summarizing the whole audio. "
+            "The 'segments' array must contain the per-segment details described above."
+        )
+    else:
+        parts.append(
+            "Do not provide a 'summary' field. "
+            "The 'segments' array must contain the per-segment details described above."
+        )
 
     return "\n\n".join(parts)
 
@@ -205,6 +215,7 @@ def build_schema(
     diarize: bool,
     translate: str | None,
     emotion: bool,
+    summary: bool,
 ) -> types.Schema:
     segment_props: dict[str, types.Schema] = {
         "content": types.Schema(
@@ -255,24 +266,30 @@ def build_schema(
         )
         segment_required.append("emotion")
 
+    schema_props: dict[str, types.Schema] = {
+        "segments": types.Schema(
+            type=types.Type.ARRAY,
+            description="List of transcribed segments.",
+            items=types.Schema(
+                type=types.Type.OBJECT,
+                properties=segment_props,
+                required=segment_required,
+            ),
+        ),
+    }
+    schema_required = ["segments"]
+
+    if summary:
+        schema_props["summary"] = types.Schema(
+            type=types.Type.STRING,
+            description="A concise summary of the audio content.",
+        )
+        schema_required.append("summary")
+
     return types.Schema(
         type=types.Type.OBJECT,
-        properties={
-            "summary": types.Schema(
-                type=types.Type.STRING,
-                description="A concise summary of the audio content.",
-            ),
-            "segments": types.Schema(
-                type=types.Type.ARRAY,
-                description="List of transcribed segments.",
-                items=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties=segment_props,
-                    required=segment_required,
-                ),
-            ),
-        },
-        required=["summary", "segments"],
+        properties=schema_props,
+        required=schema_required,
     )
 
 
@@ -351,7 +368,7 @@ def parse_response_text(response_text: str) -> dict:
         raise SystemExit(f"Error: model response is not valid JSON:\n{text[:500]}\n{e}") from e
 
 
-def render_output(data: dict, fmt: str, timestamps: bool, diarize: bool, translate: bool, emotion: bool) -> str:
+def render_output(data: dict, fmt: str, timestamps: bool, diarize: bool, translate: bool, emotion: bool, summary: bool) -> str:
     if fmt == "json":
         return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -373,9 +390,9 @@ def render_output(data: dict, fmt: str, timestamps: bool, diarize: bool, transla
 
     # txt
     lines = []
-    summary = data.get("summary")
-    if summary:
-        lines.append(f"Summary: {summary}")
+    summary_text = data.get("summary")
+    if summary and summary_text:
+        lines.append(f"Summary: {summary_text}")
         lines.append("")
     for seg in segments:
         prefix_parts = []
@@ -449,12 +466,14 @@ def main() -> None:
         diarize=args.diarize,
         translate=args.translate,
         emotion=args.emotion,
+        summary=args.summary,
     )
     schema = build_schema(
         timestamps=args.timestamps,
         diarize=args.diarize,
         translate=args.translate,
         emotion=args.emotion,
+        summary=args.summary,
     )
 
     contents = [
@@ -485,6 +504,7 @@ def main() -> None:
         diarize=args.diarize,
         translate=bool(args.translate),
         emotion=args.emotion,
+        summary=args.summary,
     )
 
     if args.output:
