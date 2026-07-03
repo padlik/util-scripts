@@ -35,7 +35,7 @@ class JiraClient:
             "Accept": "application/json",
         })
 
-    def _get(self, path: str, params: dict = None) -> dict:
+    def _get(self, path: str, params: Optional[dict] = None) -> dict:
         resp = self.session.get(f"{self.base_url}/rest/api/2{path}", params=params)
         resp.raise_for_status()
         return resp.json()
@@ -57,7 +57,7 @@ class JiraClient:
     def get_current_user(self) -> dict:
         return self._get("/myself")
 
-    def search_issues(self, jql: str, fields: list[str] = None) -> list[dict]:
+    def search_issues(self, jql: str, fields: Optional[list[str]] = None) -> list[dict]:
         """Return all issues matching JQL, handling pagination."""
         if fields is None:
             fields = ["summary", "project"]
@@ -98,7 +98,7 @@ class JiraClient:
     def get_worklog(self, issue_key: str, worklog_id: str) -> dict:
         return self._get(f"/issue/{issue_key}/worklog/{worklog_id}")
 
-    def add_worklog(self, issue_key: str, time_spent: str, comment: str = "", started: datetime = None) -> dict:
+    def add_worklog(self, issue_key: str, time_spent: str, comment: str = "", started: Optional[datetime] = None) -> dict:
         if started is None:
             started = datetime.now(tz=timezone.utc)
         started_str = started.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
@@ -108,10 +108,15 @@ class JiraClient:
             "started": started_str,
         })
 
-    def update_worklog(self, issue_key: str, worklog_id: str, time_spent: str, comment: str = None) -> dict:
-        payload = {"timeSpent": time_spent}
+    def update_worklog(self, issue_key: str, worklog_id: str, time_spent: Optional[str] = None,
+                       comment: Optional[str] = None, started: Optional[datetime] = None) -> dict:
+        payload = {}
+        if time_spent is not None:
+            payload["timeSpent"] = time_spent
         if comment is not None:
             payload["comment"] = comment
+        if started is not None:
+            payload["started"] = started.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
         return self._put(f"/issue/{issue_key}/worklog/{worklog_id}", json=payload)
 
     def delete_worklog(self, issue_key: str, worklog_id: str) -> None:
@@ -150,19 +155,22 @@ def seconds_to_hours(seconds: int) -> float:
 
 def format_entry(project_key: str, project_name: str,
                  task_key: str, task_summary: str,
-                 wl_id: str, comment: str, hours: float) -> str:
+                 wl_id: str, comment: str, hours: float, date: str = "") -> str:
     comment_text = (comment or "").strip() or "(no comment)"
-    return (
+    entry = (
         f"[{project_key}] {project_name} , "
         f"[{task_key}] {task_summary} , "
         f"[{wl_id}] {comment_text}, "
         f"{hours} Hrs."
     )
+    if date:
+        entry += f" , {date}"
+    return entry
 
 
 def entry_dict(project_key: str, project_name: str,
                task_key: str, task_summary: str,
-               wl_id: str, comment: str, hours: float) -> dict:
+               wl_id: str, comment: str, hours: float, date: str = "") -> dict:
     return {
         "project_key": project_key,
         "project_name": project_name,
@@ -171,7 +179,20 @@ def entry_dict(project_key: str, project_name: str,
         "id": wl_id,
         "comment": (comment or "").strip(),
         "hours": hours,
+        "date": date,
     }
+
+
+def worklog_date(wl: dict) -> str:
+    """Return the worklog's started date as YYYY-MM-DD (empty if unavailable)."""
+    started = wl.get("started", "")
+    return started[:10] if started else ""
+
+
+def worklog_author(wl: dict) -> str:
+    """Return the worklog author's name or email."""
+    author = wl.get("author", {})
+    return author.get("name", "") or author.get("emailAddress", "")
 
 
 def parse_worklogs_in_range(worklogs: list[dict], start: date, end: date,
@@ -293,12 +314,13 @@ def list_cmd(ctx, year, month, project, task, user):
         for wl in filtered:
             hours = seconds_to_hours(wl.get("timeSpentSeconds", 0))
             total_hours += hours
+            wl_dt = worklog_date(wl)
             if output_json:
                 entries.append(entry_dict(proj_key, proj_name, task_key, task_summary,
-                                          wl["id"], wl.get("comment", ""), hours))
+                                          wl["id"], wl.get("comment", ""), hours, wl_dt))
             else:
                 click.echo(format_entry(proj_key, proj_name, task_key, task_summary,
-                                        wl["id"], wl.get("comment", ""), hours))
+                                        wl["id"], wl.get("comment", ""), hours, wl_dt))
 
     if output_json:
         click.echo(json.dumps({"worklogs": entries, "total_hours": round(total_hours, 2)}, indent=2))
@@ -349,16 +371,17 @@ def add_cmd(ctx, task_id, log_time, comment, year, month, log_date):
         proj_key, proj_name, task_key, task_summary = ("", "", task_id, "")
 
     hours = seconds_to_hours(wl.get("timeSpentSeconds", 0))
+    wl_dt = worklog_date(wl)
     if output_json:
         click.echo(json.dumps({
             "action": "add",
             "new": entry_dict(proj_key, proj_name, task_key, task_summary,
-                              wl["id"], wl.get("comment", ""), hours),
+                              wl["id"], wl.get("comment", ""), hours, wl_dt),
         }, indent=2))
     else:
         click.echo("NEW:")
         click.echo(format_entry(proj_key, proj_name, task_key, task_summary,
-                                wl["id"], wl.get("comment", ""), hours))
+                                wl["id"], wl.get("comment", ""), hours, wl_dt))
 
 
 # ---------------------------------------------------------------------------
@@ -368,12 +391,35 @@ def add_cmd(ctx, task_id, log_time, comment, year, month, log_date):
 @cli.command("edit")
 @click.option("--task-id", required=True, help="Task ID (e.g. PROJ-123)")
 @click.option("--wl-id", required=True, help="Worklog ID")
-@click.option("--log-time", required=True, type=float, help="New time in hours")
+@click.option("--log-time", default=None, type=float, help="New time in hours (optional)")
 @click.option("--comment", default=None, help="New worklog comment (optional)")
+@click.option("--date", "log_date", default=None,
+              help="New worklog date (YYYY-MM-DD)")
+@click.option("--user", default=None,
+              help="Only edit if the worklog belongs to this user (email or username)")
 @click.pass_context
-def edit_cmd(ctx, task_id, wl_id, log_time, comment):
-    """Edit an existing worklog entry."""
+def edit_cmd(ctx, task_id, wl_id, log_time, comment, log_date, user):
+    """Edit an existing worklog entry (time, comment, and/or date).
+
+    At least one of --log-time, --comment, or --date must be provided.
+    Use --user to guard against editing another person's worklog.
+    """
     output_json = ctx.obj.get("json", False)
+
+    if log_time is None and comment is None and log_date is None:
+        click.echo("Error: provide at least one of --log-time, --comment, or --date.", err=True)
+        sys.exit(1)
+
+    started = None
+    if log_date:
+        try:
+            work_date = datetime.strptime(log_date, "%Y-%m-%d").date()
+        except ValueError:
+            click.echo(f"Error: invalid --date '{log_date}', expected YYYY-MM-DD.", err=True)
+            sys.exit(1)
+        started = datetime(work_date.year, work_date.month, work_date.day,
+                           9, 0, 0, tzinfo=timezone.utc)
+
     client = JiraClient()
 
     try:
@@ -383,38 +429,49 @@ def edit_cmd(ctx, task_id, wl_id, log_time, comment):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
+    if user:
+        author = worklog_author(old_wl)
+        if author.lower() != user.lower():
+            click.echo(
+                f"Error: worklog {wl_id} belongs to '{author}', not '{user}'. Aborting.",
+                err=True,
+            )
+            sys.exit(1)
+
     if issue:
         proj_key, proj_name, task_key, task_summary = get_issue_meta(issue[0])
     else:
         proj_key, proj_name, task_key, task_summary = ("", "", task_id, "")
 
     old_hours = seconds_to_hours(old_wl.get("timeSpentSeconds", 0))
-    time_spent = hours_to_jira_duration(log_time)
+    old_date = worklog_date(old_wl)
+    time_spent = hours_to_jira_duration(log_time) if log_time is not None else None
 
     try:
-        new_wl = client.update_worklog(task_id, wl_id, time_spent, comment)
+        new_wl = client.update_worklog(task_id, wl_id, time_spent, comment, started)
     except Exception as e:
         click.echo(f"Error updating worklog: {e}", err=True)
         sys.exit(1)
 
     new_comment = comment if comment is not None else old_wl.get("comment", "")
     new_hours = seconds_to_hours(new_wl.get("timeSpentSeconds", 0))
+    new_date = worklog_date(new_wl)
 
     if output_json:
         click.echo(json.dumps({
             "action": "edit",
             "old": entry_dict(proj_key, proj_name, task_key, task_summary,
-                              wl_id, old_wl.get("comment", ""), old_hours),
+                              wl_id, old_wl.get("comment", ""), old_hours, old_date),
             "new": entry_dict(proj_key, proj_name, task_key, task_summary,
-                              wl_id, new_comment, new_hours),
+                              wl_id, new_comment, new_hours, new_date),
         }, indent=2))
     else:
         click.echo("OLD:")
         click.echo(format_entry(proj_key, proj_name, task_key, task_summary,
-                                wl_id, old_wl.get("comment", ""), old_hours))
+                                wl_id, old_wl.get("comment", ""), old_hours, old_date))
         click.echo("NEW:")
         click.echo(format_entry(proj_key, proj_name, task_key, task_summary,
-                                wl_id, new_comment, new_hours))
+                                wl_id, new_comment, new_hours, new_date))
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +500,7 @@ def delete_cmd(ctx, task_id, wl_id):
         proj_key, proj_name, task_key, task_summary = ("", "", task_id, "")
 
     hours = seconds_to_hours(wl.get("timeSpentSeconds", 0))
+    wl_dt = worklog_date(wl)
 
     try:
         client.delete_worklog(task_id, wl_id)
@@ -454,12 +512,12 @@ def delete_cmd(ctx, task_id, wl_id):
         click.echo(json.dumps({
             "action": "delete",
             "deleted": entry_dict(proj_key, proj_name, task_key, task_summary,
-                                  wl_id, wl.get("comment", ""), hours),
+                                  wl_id, wl.get("comment", ""), hours, wl_dt),
         }, indent=2))
     else:
         click.echo("DELETED:")
         click.echo(format_entry(proj_key, proj_name, task_key, task_summary,
-                                wl_id, wl.get("comment", ""), hours))
+                                wl_id, wl.get("comment", ""), hours, wl_dt))
 
 
 if __name__ == "__main__":

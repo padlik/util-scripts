@@ -30,12 +30,16 @@
 
 ## `edit`
 
+At least one of `--log-time`, `--comment`, or `--date` must be provided.
+
 | Option | Required | Default | Description |
 |---|---|---|---|
 | `--task-id` | **Yes** | — | Task ID |
 | `--wl-id` | **Yes** | — | Worklog ID (from `list` output) |
-| `--log-time` | **Yes** | — | New time in hours |
+| `--log-time` | No | unchanged | New time in hours |
 | `--comment` | No | unchanged | New comment |
+| `--date` | No | unchanged | New worklog date (`YYYY-MM-DD`); logged at 09:00 UTC |
+| `--user` | No | — | Only edit if the worklog's author matches this username/email, else abort |
 
 ## `delete`
 
@@ -68,12 +72,15 @@
       "task_summary": "Fix login bug",
       "id": "10001",
       "comment": "Investigated issue",
-      "hours": 2.5
+      "hours": 2.5,
+      "date": "2026-04-15"
     }
   ],
   "total_hours": 2.5
 }
 ```
+
+Every worklog entry (in `list`, `add`, `edit`, and `delete` output) includes a `date` field (`YYYY-MM-DD`, empty if unavailable).
 
 ### add
 ```json

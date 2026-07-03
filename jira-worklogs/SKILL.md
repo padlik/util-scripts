@@ -14,11 +14,7 @@ A single-file Python CLI (`worklogs.py`) for managing Jira worklogs. Uses Jira R
 
 Before running any command, ensure:
 
-1. Activate the environment:
-```sh
-source /home/paul/.config/wl_jira/.env
-```
-2. Required environment variables:
+Required environment variables:
    - `WL_JIRA_URL` — Jira server base URL (default: `https://jira.intetics.com`)
    - `WL_JIRA_TOKEN` — Bearer token for authentication
 
@@ -62,10 +58,13 @@ uv run ./scripts/worklogs.py --json add --task-id PROJ-123 --log-time HOURS [--c
 
 #### Edit a worklog
 ```bash
-uv run ./scripts/worklogs.py --json edit --task-id PROJ-123 --wl-id WORKLOG_ID --log-time HOURS [--comment "new text"]
+uv run ./scripts/worklogs.py --json edit --task-id PROJ-123 --wl-id WORKLOG_ID [--log-time HOURS] [--comment "new text"] [--date YYYY-MM-DD] [--user email]
 ```
 - `--wl-id` is the worklog ID shown in brackets in `list` output: `[10045]`.
-- Prints the old and new values.
+- Provide at least one of `--log-time`, `--comment`, or `--date`; all are optional so you can change only what you need.
+- `--date YYYY-MM-DD` moves the worklog to a different day (logged at 09:00 UTC).
+- `--user email` is a safety guard: the edit only proceeds if the worklog belongs to that user (matched by Jira username or email), otherwise it aborts. Use it when managing another person's worklogs.
+- Prints the old and new values (including the date).
 
 #### Delete a worklog
 ```bash
@@ -142,5 +141,16 @@ uv run ./scripts/worklogs.py --json edit --task-id PROJ-42 --wl-id 10045 --log-t
 ```bash
 uv run ./scripts/worklogs.py --json list --year 2026 --month 4 | jq '.total_hours'
 ```
+
+**Example 5: Move a worklog to a different date**
+```bash
+uv run ./scripts/worklogs.py --json edit --task-id PROJ-42 --wl-id 10045 --date 2026-04-15
+```
+
+**Example 6: Edit another user's worklog (with author guard)**
+```bash
+uv run ./scripts/worklogs.py --json edit --task-id PROJ-42 --wl-id 10045 --log-time 4 --date 2026-04-16 --user jdoe@example.com
+```
+The edit aborts if worklog `10045` was not authored by `jdoe@example.com`.
 
 See `references/command-reference.md` for full option reference.
