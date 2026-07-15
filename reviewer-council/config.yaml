@@ -1,0 +1,25 @@
+council:
+  
+  review_loop:
+    max_iterations: 3
+
+  reviewers:
+
+    alpha:
+      model: openai/gpt-5.5
+      prompt: prompts/architecture.md
+
+
+    beta:
+      model: anthropic/claude-sonnet-4.6
+      prompt: prompts/implementation.md
+
+    gamma:
+      model: anthropic/claude-opus-4.8
+      prompt: prompts/security.md
+
+
+  judge:
+    enabled: true
+    model: openai/gpt-5.5
+    prompt: prompts/judge.md
