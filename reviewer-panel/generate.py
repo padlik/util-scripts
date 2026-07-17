@@ -11,7 +11,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).parent
 AGENT_DIR = ROOT / ".opencode" / "agent"
-COMMAND_DIR = ROOT / ".opencode" / "command"
+COMMAND_DIR = ROOT / ".opencode" / "commands"
 
 REVIEWER_META = {
     "alpha": ("Alpha", "Architecture Reviewer",
@@ -50,10 +50,10 @@ def write_agent(name, description, model, prompt_path, mode, extra_tools=None):
 
 
 def write_orchestrator(cfg):
-    reviewers = cfg["council"]["reviewers"]
-    judge_cfg = cfg["council"]["judge"]
+    reviewers = cfg["panel"]["reviewers"]
+    judge_cfg = cfg["panel"]["judge"]
     judge_enabled = judge_cfg.get("enabled", True)
-    max_iter = cfg["council"]["review_loop"]["max_iterations"]
+    max_iter = cfg["panel"]["review_loop"]["max_iterations"]
 
     reviewer_lines = "\n".join(
         f"- @{key} ({REVIEWER_META[key][0]}, {REVIEWER_META[key][1]}) — {REVIEWER_META[key][2]}"
@@ -68,11 +68,11 @@ def write_orchestrator(cfg):
      REQUIRED_FIXES: ...
    Map APPROVE -> PASS and REQUEST_CHANGES -> FAIL for the final report below."""
     else:
-        decision_block = """4. No judge is configured (council.judge.enabled: false in config.yaml).
+        decision_block = """4. No judge is configured (panel.judge.enabled: false in config.yaml).
    Decide DECISION yourself using the Decision Rules above — do not fabricate a judge verdict."""
 
     body = f"""---
-description: Multi-model code reviewer to use with OpenCode. Emulates a council review board. Use when a deep code review with different models is requested. E.g. "Do a deep code review", "provide extended review", "Do all aspects code review".
+description: Multi-model code reviewer to use with OpenCode. Emulates a review panel. Use when a deep code review with different models is requested. E.g. "Do a deep code review", "provide extended review", "Do all aspects code review".
 mode: primary
 tools:
   write: false
@@ -80,13 +80,13 @@ tools:
   patch: false
 ---
 
-# Reviewer Council Orchestrator
+# Reviewer Panel Orchestrator
 
-You coordinate a council of independent reviewer subagents to validate a completed
+You coordinate a panel of independent reviewer subagents to validate a completed
 implementation before it is considered done. You never edit code yourself — you only
 collect context, dispatch reviewers, and synthesize their verdicts.
 
-## Council members
+## Panel members
 
 {reviewer_lines}
 {'- @judge (Final decision maker, model: ' + judge_cfg['model'] + ')' if judge_enabled else ''}
@@ -123,7 +123,7 @@ PASS if:
 ## Re-review loop
 
 This command may be re-invoked after fixes are applied. Do not silently loop more than
-{max_iter} review rounds (council.review_loop.max_iterations in config.yaml) on the same
+{max_iter} review rounds (panel.review_loop.max_iterations in config.yaml) on the same
 set of changes — if it still fails after {max_iter} rounds, stop and escalate to the user
 instead of continuing automatically.
 
@@ -152,30 +152,30 @@ Recommendation:
 ```
 """
     AGENT_DIR.mkdir(parents=True, exist_ok=True)
-    (AGENT_DIR / "reviewer-council.md").write_text(body)
+    (AGENT_DIR / "reviewer-panel.md").write_text(body)
 
 
 def write_command():
     COMMAND_DIR.mkdir(parents=True, exist_ok=True)
     body = """---
-description: Run the reviewer council (architecture, implementation, risk + judge) over the current diff
-agent: reviewer-council
+description: Run the reviewer panel (architecture, implementation, risk + judge) over the current diff
+agent: reviewer-panel
 ---
-Run a full council review of the pending changes. $ARGUMENTS
+Run a full panel review of the pending changes. $ARGUMENTS
 """
-    (COMMAND_DIR / "review-council.md").write_text(body)
+    (COMMAND_DIR / "review-panel.md").write_text(body)
 
 
 def main():
     cfg = load_config()
-    reviewers = cfg["council"]["reviewers"]
-    judge_cfg = cfg["council"]["judge"]
+    reviewers = cfg["panel"]["reviewers"]
+    judge_cfg = cfg["panel"]["judge"]
 
     for key, rconf in reviewers.items():
         title, role, _ = REVIEWER_META.get(key, (key.title(), "Reviewer", ""))
         write_agent(
             name=key,
-            description=f"{title}, the {role.lower()}. Invoked by @reviewer-council — not for direct use.",
+            description=f"{title}, the {role.lower()}. Invoked by @reviewer-panel — not for direct use.",
             model=rconf["model"],
             prompt_path=rconf["prompt"],
             mode="subagent",
@@ -184,7 +184,7 @@ def main():
     if judge_cfg.get("enabled", True):
         write_agent(
             name="judge",
-            description="Final review judge. Resolves disagreements between the council reviewers. Invoked by @reviewer-council — not for direct use.",
+            description="Final review judge. Resolves disagreements between the panel reviewers. Invoked by @reviewer-panel — not for direct use.",
             model=judge_cfg["model"],
             prompt_path=judge_cfg["prompt"],
             mode="subagent",

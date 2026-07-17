@@ -1,6 +1,6 @@
 ---
-name: reviewer-council
-description: Multi-model code reviewer to use with OpenCode. Emulates council review board. Use when deep code review with different models is requested. E.g. "Do a deep code review", "provide extended review", "Do all aspects code review"
+name: reviewer-panel
+description: Multi-model code reviewer to use with OpenCode. Emulates review panel. Use when deep code review with different models is requested. E.g. "Do a deep code review", "provide extended review", "Do all aspects code review"
 license: MIT
 compatibility: Requires OpenCode.
   metadata:
@@ -8,13 +8,13 @@ compatibility: Requires OpenCode.
   version: "1.0"
 ---
 
-# Reviewer Council Skill
+# Reviewer Panel Skill
 
 ## Purpose
 
 Perform multi-agent review of completed implementation before task completion.
 
-The council validates:
+The panel validates:
 - correctness
 - architecture
 - security
@@ -37,9 +37,9 @@ Skip for:
 - trivial renames
 
 
-## Council Structure
+## Panel Structure
 
-The council consists of three reviewers:
+The panel consists of three reviewers:
 
 ### Alpha — Architecture Reviewer
 
@@ -124,8 +124,8 @@ This spec is compiled into runnable OpenCode agents by `generate.py`.
 - `config.yaml` — per-reviewer model + prompt assignment, judge on/off, `review_loop.max_iterations`
 - `prompts/*.md` — the persona instructions for each reviewer/judge (source text)
 - `.opencode/agent/*.md` — compiled output: `alpha`, `beta`, `gamma`, `judge` (subagents) and
-  `reviewer-council` (the primary orchestrator that dispatches them and applies the Decision Rules above)
-- `.opencode/command/review-council.md` — the `/review-council` entry point
+  `reviewer-panel` (the primary orchestrator that dispatches them and applies the Decision Rules above)
+- `.opencode/command/review-panel.md` — the `/review-panel` entry point
 
 After editing `config.yaml` or any `prompts/*.md` file, re-run:
 

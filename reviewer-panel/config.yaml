@@ -1,4 +1,4 @@
-council:
+panel:
   
   review_loop:
     max_iterations: 3
@@ -6,20 +6,20 @@ council:
   reviewers:
 
     alpha:
-      model: openai/gpt-5.5
+      model: anthropic/claude-opus-4.8
       prompt: prompts/architecture.md
 
 
     beta:
-      model: anthropic/claude-sonnet-4.6
+      model: anthropic/claude-opus-4.8
       prompt: prompts/implementation.md
 
     gamma:
-      model: anthropic/claude-opus-4.8
+      model: ollama-cloud/deepseek-v4-pro
       prompt: prompts/security.md
 
 
   judge:
     enabled: true
-    model: openai/gpt-5.5
+    model: ollama-cloud/glm-5.2
     prompt: prompts/judge.md
